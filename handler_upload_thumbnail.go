@@ -1,10 +1,13 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -43,16 +46,37 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusBadRequest, "There was an error forming the file", err)
 		return
 	}
-	mediaType := header.Header.Get("Content-Type")
+	defer file.Close()
 
-	data, err := io.ReadAll(file)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "There was an error reading the data", err)
+	contentTypeHeader := header.Header.Get("Content-Type")
+	if contentTypeHeader == "" {
+		respondWithError(w, http.StatusBadRequest, "The Content-Type header is empty", nil)
 		return
 	}
 
-	videoStr := base64.StdEncoding.EncodeToString(data)
-	thumbnailURL := fmt.Sprintf("data:%v;base64,%v", mediaType, videoStr)
+	mediaType, _, err := mime.ParseMediaType(contentTypeHeader)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "There was an error parsing the contentHeader", err)
+		return
+	}
+	if mediaType != "image/jpeq" && mediaType != "image/png" {
+		respondWithError(w, http.StatusBadRequest, "The thumbnail must be a png or a jpeg", nil)
+		return
+	}
+	diskPath := filepath.Join(cfg.assetsRoot, videoID.String())
+	diskPath += "." + strings.Split(mediaType, "/")[1]
+
+	dst, err := os.Create(diskPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "There was an error creating the new file...", err)
+		return
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "There was an error copying the image to the new file...", err)
+		return
+	}
 
 	video, err := cfg.db.GetVideo(videoID)
 	if err != nil {
@@ -64,6 +88,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	thumbnailURL := fmt.Sprintf("http://localhost:%v/assets/%v.png", cfg.port, videoID)
 	video.ThumbnailURL = &thumbnailURL
 	if err = cfg.db.UpdateVideo(video); err != nil {
 		respondWithError(w, http.StatusBadRequest, "There was an error adding the video data from the database", err)
